@@ -174,21 +174,12 @@ router.get('/:id', authenticateToken, async (req, res) => {
       email: candidate.email,
       phone: candidate.phone,
       cvFilePath: candidate.cv_file_path,
-      cvText: candidate.cv_text,
       status: candidate.status,
-      appliedAt: candidate.applied_at,
-      role: {
-        id: candidate.role_id,
-        title: candidate.role_title,
-        description: candidate.role_description,
-        requirements: candidate.role_requirements
-      },
       evaluation: candidate.score ? {
         score: candidate.score,
         strengths: candidate.strengths,
         weaknesses: candidate.weaknesses,
         summary: candidate.evaluation_summary,
-        modelUsed: candidate.model_used,
         evaluationDate: candidate.evaluation_date
       } : null
     };

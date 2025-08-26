@@ -462,6 +462,136 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /api/roles/:id/candidates
+ * Obtener todos los candidatos para un rol específico
+ */
+router.get('/:id/candidates', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 10, status, search } = req.query;
+
+    // Verificar que el rol existe y el usuario tiene permisos
+    const roleCheck = await query(
+      'SELECT created_by FROM public.job_roles WHERE id = $1',
+      [id]
+    );
+
+    if (roleCheck.rows.length === 0) {
+      return res.status(404).json({
+        error: {
+          message: 'Rol no encontrado',
+          status: 404
+        }
+      });
+    }
+
+    if (roleCheck.rows[0].created_by !== req.user.id && req.user.profile?.role !== 'admin') {
+      return res.status(403).json({
+        error: {
+          message: 'No tienes permisos para ver los candidatos de este rol',
+          status: 403
+        }
+      });
+    }
+
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+
+    let whereConditions = ['a.job_role_id = $1'];
+    let queryParams = [id];
+    let paramCount = 2;
+
+    if (status) {
+      whereConditions.push(`a.status = $${paramCount}`);
+      queryParams.push(status);
+      paramCount++;
+    }
+
+    if (search) {
+      whereConditions.push(`(a.candidate_name ILIKE $${paramCount} OR a.candidate_email ILIKE $${paramCount})`);
+      queryParams.push(`%${search}%`);
+      paramCount++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    const candidatesQuery = `
+      SELECT 
+        a.id,
+        a.candidate_name as name,
+        a.candidate_email as email,
+        a.cv_file_path as "cvUrl",
+        COALESCE(e.score, 0) as score,
+        e.strengths,
+        e.weaknesses,
+        e.summary as evaluation,
+        e.created_at as evaluation_date,
+        a.applied_at as appliedAt,
+        a.status
+      FROM public.applications a
+      LEFT JOIN public.evaluations e ON a.id = e.application_id
+      WHERE ${whereClause}
+      ORDER BY a.applied_at DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `;
+
+    queryParams.push(limitNum, offset);
+
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM public.applications a
+      WHERE ${whereClause}
+    `;
+
+    const countParams = queryParams.slice(0, -2);
+
+    const [candidatesResult, countResult] = await Promise.all([
+      query(candidatesQuery, queryParams),
+      query(countQuery, countParams)
+    ]);
+
+    const total = parseInt(countResult.rows[0].total);
+    const totalPages = Math.ceil(total / limitNum);
+
+    // Formatear candidatos según la especificación
+    const candidates = candidatesResult.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      cvUrl: row.cvUrl,
+      score: parseInt(row.score) || 0,
+      strengths: row.strengths || [],
+      weaknesses: row.weaknesses || [],
+      evaluation: row.evaluation || '',
+      evaluation_date: row.evaluation_date,
+      appliedAt: row.appliedAt,
+      status: row.status
+    }));
+
+    res.json({
+      candidates,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages,
+        hasNext: pageNum < totalPages,
+        hasPrev: pageNum > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo candidatos del rol:', error);
+    res.status(500).json({
+      error: {
+        message: 'Error interno del servidor',
+        status: 500
+      }
+    });
+  }
+});
+
+/**
  * GET /api/roles/:id/applications
  * Obtener aplicaciones de un rol específico
  */
