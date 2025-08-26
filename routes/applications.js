@@ -3,7 +3,7 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
 const { query, transaction } = require('../utils/database');
-const { supabase } = require('../config/supabase');
+const { supabase, supabaseAdmin } = require('../config/supabase');
 const { evaluateCV } = require('../config/groq');
 const Joi = require('joi');
 const { v4: uuidv4 } = require('uuid');
@@ -59,7 +59,8 @@ const updateApplicationSchema = Joi.object({
  */
 async function uploadToSupabaseStorage(fileBuffer, fileName, contentType) {
   try {
-    const { data, error } = await supabase.storage
+    // Usar supabaseAdmin (service role) para bypass de RLS en operaciones del servidor
+    const { data, error } = await supabaseAdmin.storage
       .from('cvs')
       .upload(fileName, fileBuffer, {
         contentType,
@@ -71,7 +72,7 @@ async function uploadToSupabaseStorage(fileBuffer, fileName, contentType) {
     }
 
     // Obtener URL pública del archivo
-    const { data: urlData } = supabase.storage
+    const { data: urlData } = supabaseAdmin.storage
       .from('cvs')
       .getPublicUrl(data.path);
 
@@ -197,21 +198,29 @@ router.post('/', upload.single('cv'), async (req, res) => {
             
             const evaluation = await evaluateCV(cvText, jobRole.description);
             
-            await query(
-              `INSERT INTO public.evaluations (
-                application_id, score, strengths, weaknesses, summary, model_used
-              ) VALUES ($1, $2, $3, $4, $5, $6)`,
-              [
-                applicationId,
-                evaluation.score,
-                JSON.stringify(evaluation.strengths),
-                JSON.stringify(evaluation.weaknesses),
-                evaluation.summary,
-                'llama-3.1-8b-instant'
-              ]
-            );
+            // Usar una nueva conexión para la evaluación en segundo plano
+            const { getClient } = require('../utils/database');
+            const client = await getClient();
             
-            console.log(`✅ Evaluación completada para aplicación ${applicationId}`);
+            try {
+              await client.query(
+                `INSERT INTO public.evaluations (
+                  application_id, score, strengths, weaknesses, summary, model_used
+                ) VALUES ($1, $2, $3, $4, $5, $6)`,
+                [
+                  applicationId,
+                  evaluation.score,
+                  JSON.stringify(evaluation.strengths),
+                  JSON.stringify(evaluation.weaknesses),
+                  evaluation.summary,
+                  'llama-3.1-8b-instant'
+                ]
+              );
+              
+              console.log(`✅ Evaluación completada para aplicación ${applicationId}`);
+            } finally {
+              client.release();
+            }
           } catch (evalError) {
             console.error(`❌ Error evaluando CV para aplicación ${applicationId}:`, evalError);
           }
@@ -222,7 +231,7 @@ router.post('/', upload.single('cv'), async (req, res) => {
         // Si hay error, intentar limpiar el archivo subido
         if (cvFilePath) {
           try {
-            await supabase.storage
+            await supabaseAdmin.storage
               .from('cvs')
               .remove([uniqueFileName]);
           } catch (cleanupError) {
@@ -586,7 +595,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       if (application.cv_file_path) {
         try {
           const fileName = application.cv_file_path.split('/').pop();
-          await supabase.storage
+          await supabaseAdmin.storage
             .from('cvs')
             .remove([fileName]);
         } catch (storageError) {
