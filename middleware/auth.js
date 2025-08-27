@@ -65,6 +65,11 @@ async function authenticateToken(req, res, next) {
       }
     } catch (dbError) {
       console.error('Error obteniendo perfil de usuario:', dbError);
+      // Si hay un error de conexión a la base de datos, continuar sin perfil
+      // pero loggear el error para debugging
+      if (dbError.message.includes('Cannot read properties of undefined')) {
+        console.error('❌ Error crítico de conexión a la base de datos');
+      }
       req.user = user; // Continuar sin perfil si hay error en DB
     }
 
