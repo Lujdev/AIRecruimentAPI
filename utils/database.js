@@ -42,14 +42,35 @@ async function query(text, params) {
 }
 
 /**
+ * Wrapper para ejecutar una consulta en un cliente con logging.
+ * @param {Object} client - El cliente de la base de datos.
+ * @param {string} text - La consulta SQL.
+ * @param {Array} params - Los parámetros de la consulta.
+ * @returns {Promise<Object>} - El resultado de la consulta.
+ */
+async function logQuery(client, text, params) {
+  const start = Date.now();
+  try {
+    const res = await client.query(text, params);
+    const duration = Date.now() - start;
+    console.log('📊 Consulta de transacción ejecutada:', { 
+      text, 
+      duration, 
+      rows: res.rowCount 
+    });
+    return res;
+  } catch (error) {
+    console.error('❌ Error en consulta de transacción:', { text, error: error.message });
+    throw error;
+  }
+}
+/**
  * Obtiene un cliente del pool para transacciones
  * @returns {Promise<Object>} - Cliente de PostgreSQL
  */
 async function getClient() {
   const client = await pool.connect();
   const query = client.query;
-  const release = client.release;
-  
   // Configurar timeout para el cliente
   const timeout = setTimeout(() => {
     console.error('❌ Cliente de base de datos no liberado después de 5 segundos');
@@ -57,32 +78,14 @@ async function getClient() {
   }, 5000);
   
   // Wrapper para liberar el cliente automáticamente
+  const release = client.release;
+  let released = false;
   client.release = () => {
+    if (released) return;
+    released = true;
     clearTimeout(timeout);
-    client.release = release;
     return release.apply(client);
-  };
-  
-  // Wrapper para consultas con logging
-  client.query = (...args) => {
-    const start = Date.now();
-    return query.apply(client, args).then(res => {
-      const duration = Date.now() - start;
-      console.log('📊 Consulta de transacción ejecutada:', { 
-        text: args[0], 
-        duration, 
-        rows: res.rowCount 
-      });
-      return res;
-    }).catch(error => {
-      console.error('❌ Error en consulta de transacción:', { 
-        text: args[0], 
-        error: error.message 
-      });
-      throw error;
-    });
-  };
-  
+  };  
   return client;
 }
 
@@ -94,12 +97,12 @@ async function getClient() {
 async function transaction(callback) {
   const client = await getClient();
   try {
-    await client.query('BEGIN');
+    await logQuery(client, 'BEGIN');
     const result = await callback(client);
-    await client.query('COMMIT');
+    await logQuery(client, 'COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    await logQuery(client, 'ROLLBACK');
     throw error;
   } finally {
     client.release();

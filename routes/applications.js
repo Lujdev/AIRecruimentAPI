@@ -4,7 +4,7 @@ const pdfParse = require('pdf-parse');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
 const { query, transaction } = require('../utils/database');
 const { supabase, supabaseAdmin } = require('../config/supabase');
-const { evaluateCV } = require('../config/groq');
+const { evaluateCVWithFile, evaluateCVWithText, MODEL_VISION } = require('../config/gemini');
 const Joi = require('joi');
 const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
@@ -176,7 +176,7 @@ router.post('/', upload.single('cv'), async (req, res) => {
           req.file.mimetype
         );
 
-        // Extraer texto del PDF
+        // Extraer texto del PDF para guardarlo en la BD (para reevaluaciones)
         cvText = await extractTextFromPDF(req.file.buffer);
 
         // Crear aplicación en la base de datos
@@ -194,33 +194,27 @@ router.post('/', upload.single('cv'), async (req, res) => {
         // Evaluar CV con IA en segundo plano (no bloquear la respuesta)
         setImmediate(async () => {
           try {
-            console.log(`🤖 Iniciando evaluación de CV para aplicación ${applicationId}`);
+            console.log(`🤖 Iniciando evaluación de CV para aplicación ${applicationId} con Gemini`);
             
-            const evaluation = await evaluateCV(cvText, jobRole.description);
-            
-            // Usar una nueva conexión para la evaluación en segundo plano
-            const { getClient } = require('../utils/database');
-            const client = await getClient();
-            
-            try {
-              await client.query(
-                `INSERT INTO public.evaluations (
-                  application_id, score, strengths, weaknesses, summary, model_used
-                ) VALUES ($1, $2, $3, $4, $5, $6)`,
-                [
-                  applicationId,
-                  evaluation.score,
-                  JSON.stringify(evaluation.strengths),
-                  JSON.stringify(evaluation.weaknesses),
-                  evaluation.summary,
-                  'llama-3.1-8b-instant'
-                ]
-              );
-              
-              console.log(`✅ Evaluación completada para aplicación ${applicationId}`);
-            } finally {
-              client.release();
-            }
+            const evaluation = await evaluateCVWithFile(req.file.buffer, jobRole.description);
+
+            // Usar la función query directamente para la inserción en segundo plano.
+            // Esta función maneja el pool de conexiones de forma segura.
+            const { query: queryAsync } = require('../utils/database');
+            await queryAsync(
+              `INSERT INTO public.evaluations (
+                application_id, score, strengths, weaknesses, summary, model_used
+              ) VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                applicationId,
+                evaluation.score,
+                JSON.stringify(evaluation.strengths),
+                JSON.stringify(evaluation.weaknesses),
+                evaluation.summary,
+                MODEL_VISION,
+              ]
+            );
+            console.log(`✅ Evaluación completada para aplicación ${applicationId}`);
           } catch (evalError) {
             console.error(`❌ Error evaluando CV para aplicación ${applicationId}:`, evalError);
           }
@@ -299,26 +293,26 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Solo mostrar aplicaciones de roles creados por el usuario (a menos que sea admin)
     if (req.user.profile?.role !== 'admin') {
-      whereConditions.push(`jr.created_by = $${paramCount}`);
+      whereConditions.push(`jr.created_by = ${paramCount}`);
       queryParams.push(req.user.id);
       paramCount++;
     }
 
     // Filtros adicionales
     if (status) {
-      whereConditions.push(`a.status = $${paramCount}`);
+      whereConditions.push(`a.status = ${paramCount}`);
       queryParams.push(status);
       paramCount++;
     }
 
     if (jobRoleId) {
-      whereConditions.push(`a.job_role_id = $${paramCount}`);
+      whereConditions.push(`a.job_role_id = ${paramCount}`);
       queryParams.push(jobRoleId);
       paramCount++;
     }
 
     if (search) {
-      whereConditions.push(`(a.candidate_name ILIKE $${paramCount} OR a.candidate_email ILIKE $${paramCount + 1})`);
+      whereConditions.push(`(a.candidate_name ILIKE ${paramCount} OR a.candidate_email ILIKE ${paramCount + 1})`);
       queryParams.push(`%${search}%`, `%${search}%`);
       paramCount += 2;
     }
@@ -339,7 +333,7 @@ router.get('/', authenticateToken, async (req, res) => {
       LEFT JOIN public.evaluations e ON a.id = e.application_id
       ${whereClause}
       ORDER BY a.applied_at DESC
-      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      LIMIT ${paramCount} OFFSET ${paramCount + 1}
     `;
 
     queryParams.push(limitNum, offset);
@@ -506,7 +500,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
         const dbField = key === 'candidateName' ? 'candidate_name' :
                        key === 'candidateEmail' ? 'candidate_email' :
                        key === 'candidatePhone' ? 'candidate_phone' : key;
-        updates.push(`${dbField} = $${paramCount}`);
+        updates.push(`${dbField} = ${paramCount}`);
         values.push(val);
         paramCount++;
       }
@@ -525,7 +519,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
     const updateQuery = `
       UPDATE public.applications 
       SET ${updates.join(', ')}, updated_at = NOW() 
-      WHERE id = $${paramCount}
+      WHERE id = ${paramCount}
       RETURNING *
     `;
 
