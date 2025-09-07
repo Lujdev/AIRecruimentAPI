@@ -1,7 +1,7 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { query } = require('../utils/database');
-const { evaluateCV } = require('../config/groq');
+const { evaluateCVWithText, MODEL_TEXT } = require('../config/gemini');
 const Joi = require('joi');
 const router = express.Router();
 
@@ -39,14 +39,14 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Solo mostrar evaluaciones de roles creados por el usuario (a menos que sea admin)
     if (req.user.profile?.role !== 'admin') {
-      whereConditions.push(`jr.created_by = $${paramCount}`);
+      whereConditions.push(`jr.created_by = ${paramCount}`);
       queryParams.push(req.user.id);
       paramCount++;
     }
 
     // Filtros adicionales
     if (jobRoleId) {
-      whereConditions.push(`a.job_role_id = $${paramCount}`);
+      whereConditions.push(`a.job_role_id = ${paramCount}`);
       queryParams.push(jobRoleId);
       paramCount++;
     }
@@ -54,7 +54,7 @@ router.get('/', authenticateToken, async (req, res) => {
     if (minScore !== undefined) {
       const score = parseFloat(minScore);
       if (!isNaN(score)) {
-        whereConditions.push(`e.score >= $${paramCount}`);
+        whereConditions.push(`e.score >= ${paramCount}`);
         queryParams.push(score);
         paramCount++;
       }
@@ -63,7 +63,7 @@ router.get('/', authenticateToken, async (req, res) => {
     if (maxScore !== undefined) {
       const score = parseFloat(maxScore);
       if (!isNaN(score)) {
-        whereConditions.push(`e.score <= $${paramCount}`);
+        whereConditions.push(`e.score <= ${paramCount}`);
         queryParams.push(score);
         paramCount++;
       }
@@ -95,7 +95,7 @@ router.get('/', authenticateToken, async (req, res) => {
       ORDER BY ${sortField === 'candidate_name' ? 'a.candidate_name' : 
                 sortField === 'job_title' ? 'jr.title' : 
                 'e.' + sortField} ${sortDirection}
-      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+      LIMIT ${paramCount} OFFSET ${paramCount + 1}
     `;
 
     queryParams.push(limitNum, offset);
@@ -335,9 +335,9 @@ router.post('/reevaluate', authenticateToken, async (req, res) => {
 
     try {
       // Realizar nueva evaluación
-      console.log(`🔄 Re-evaluando CV para aplicación ${applicationId}`);
+      console.log(`🔄 Re-evaluando CV para aplicación ${applicationId} con Gemini`);
       
-      const evaluation = await evaluateCV(application.cv_text, application.job_description);
+      const evaluation = await evaluateCVWithText(application.cv_text, application.job_description);
       
       // Verificar si ya existe una evaluación
       const existingEvaluation = await query(
@@ -359,7 +359,7 @@ router.post('/reevaluate', authenticateToken, async (req, res) => {
             JSON.stringify(evaluation.strengths),
             JSON.stringify(evaluation.weaknesses),
             evaluation.summary,
-            'llama-3.1-8b-instant',
+            MODEL_TEXT,
             applicationId
           ]
         );
@@ -376,7 +376,7 @@ router.post('/reevaluate', authenticateToken, async (req, res) => {
             JSON.stringify(evaluation.strengths),
             JSON.stringify(evaluation.weaknesses),
             evaluation.summary,
-            'llama-3.1-8b-instant'
+            MODEL_TEXT,
           ]
         );
       }
@@ -421,13 +421,13 @@ router.get('/stats', authenticateToken, async (req, res) => {
 
     // Solo mostrar estadísticas de roles creados por el usuario (a menos que sea admin)
     if (req.user.profile?.role !== 'admin') {
-      whereConditions.push(`jr.created_by = $${paramCount}`);
+      whereConditions.push(`jr.created_by = ${paramCount}`);
       queryParams.push(req.user.id);
       paramCount++;
     }
 
     if (jobRoleId) {
-      whereConditions.push(`a.job_role_id = $${paramCount}`);
+      whereConditions.push(`a.job_role_id = ${paramCount}`);
       queryParams.push(jobRoleId);
       paramCount++;
     }
