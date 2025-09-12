@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { query } = require('../utils/database');
+const { query, transaction } = require('../utils/database');
+const { supabaseAdmin } = require('../config/supabase');
 const router = express.Router();
 
 /**
@@ -29,14 +30,14 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Filtro por estado
     if (status && status !== 'all') {
-      whereConditions.push(`a.status = $${paramIndex}`);
+      whereConditions.push(`a.status = ${paramIndex}`);
       queryParams.push(status);
       paramIndex++;
     }
 
     // Filtro de búsqueda por nombre o email
     if (search && search.trim()) {
-      whereConditions.push(`(a.candidate_name ILIKE $${paramIndex} OR a.candidate_email ILIKE $${paramIndex})`);
+      whereConditions.push(`(a.candidate_name ILIKE ${paramIndex} OR a.candidate_email ILIKE ${paramIndex})`);
       queryParams.push(`%${search.trim()}%`);
       paramIndex++;
     }
@@ -66,7 +67,7 @@ router.get('/', authenticateToken, async (req, res) => {
       LEFT JOIN evaluations e ON e.application_id = a.id
       WHERE ${whereClause}
       ORDER BY ${finalSortBy === 'score' ? 'COALESCE(e.score, 0)' : finalSortBy} ${finalSortOrder}
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      LIMIT ${paramIndex} OFFSET ${paramIndex + 1}
     `;
 
     queryParams.push(parseInt(limit), offset);
@@ -195,6 +196,74 @@ router.get('/:id', authenticateToken, async (req, res) => {
       success: false,
       message: 'Error interno del servidor al obtener detalles del candidato'
     });
+  }
+});
+
+
+/**
+ * DELETE /api/candidates/:id
+ * Eliminar un candidato, su evaluación y su CV
+ */
+router.delete('/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    // Usar una transacción para asegurar la atomicidad
+    const result = await transaction(async (client) => {
+      // 1. Obtener la aplicación y verificar permisos
+      const appQuery = await client.query(
+        `SELECT a.id, a.cv_file_path, jr.created_by 
+         FROM applications a
+         JOIN job_roles jr ON a.job_role_id = jr.id
+         WHERE a.id = $1`,
+        [id]
+      );
+
+      if (appQuery.rows.length === 0) {
+        return { status: 404, message: 'Candidato no encontrado' };
+      }
+
+      const application = appQuery.rows[0];
+
+      // Solo el creador del rol o un admin puede eliminar
+      if (application.created_by !== userId && req.user.profile?.role !== 'admin') {
+        return { status: 403, message: 'No tienes permisos para eliminar este candidato' };
+      }
+
+      // 2. Eliminar evaluación asociada (si existe)
+      await client.query('DELETE FROM evaluations WHERE application_id = $1', [id]);
+
+      // 3. Eliminar la aplicación
+      await client.query('DELETE FROM applications WHERE id = $1', [id]);
+
+      // 4. Devolver el path del CV para eliminarlo después de la transacción
+      return { status: 200, cvFilePath: application.cv_file_path };
+    });
+
+    // Si la transacción falló o no se encontraron datos, devolver error
+    if (result.status !== 200) {
+      return res.status(result.status).json({ success: false, message: result.message });
+    }
+
+    // 5. Eliminar el archivo del CV de Supabase Storage
+    if (result.cvFilePath) {
+      const { error: storageError } = await supabaseAdmin.storage
+        .from('cvs')
+        .remove([result.cvFilePath]);
+
+      if (storageError) {
+        // No devolver un error fatal si solo falla la eliminación del archivo,
+        // pero sí registrarlo.
+        console.error(`Error al eliminar CV de Storage: ${result.cvFilePath}`, storageError);
+      }
+    }
+
+    res.json({ success: true, message: 'Candidato eliminado exitosamente' });
+
+  } catch (error) {
+    console.error('Error al eliminar candidato:', error);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
   }
 });
 

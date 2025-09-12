@@ -135,17 +135,15 @@ npm start
 | POST | `/` | Crear nuevo puesto |
 | GET | `/:id` | Obtener puesto específico |
 | PUT | `/:id` | Actualizar puesto |
-| DELETE | `/:id` | Eliminar puesto |
+| DELETE | `/:id` | Eliminar un rol y todas sus aplicaciones, evaluaciones y CVs asociados |
 
-#### 📄 Aplicaciones (`/api/applications`)
+#### 📄 Candidatos (`/api/candidates`)
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| POST | `/` | Crear aplicación con CV |
-| GET | `/` | Listar aplicaciones |
-| GET | `/:id` | Obtener aplicación específica |
-| PUT | `/:id` | Actualizar aplicación |
-| DELETE | `/:id` | Eliminar aplicación |
+| GET | `/` | Listar todos los candidatos de la empresa |
+| GET | `/:id` | Obtener detalles de un candidato |
+| DELETE | `/:id` | Eliminar un candidato, su evaluación y su CV |
 
 #### 🤖 Evaluaciones (`/api/evaluations`)
 

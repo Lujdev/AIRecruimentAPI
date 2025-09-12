@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 const { query, transaction } = require('../utils/database');
+const { supabaseAdmin } = require('../config/supabase');
 const Joi = require('joi');
 const router = express.Router();
 
@@ -395,69 +396,79 @@ router.put('/:id', authenticateToken, async (req, res) => {
 
 /**
  * DELETE /api/roles/:id
- * Eliminar un rol
+ * Eliminar un rol y todas sus aplicaciones, evaluaciones y CVs asociados
  */
 router.delete('/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
   try {
-    const { id } = req.params;
-
-    // Verificar que el rol existe y pertenece al usuario
-    const existingRole = await query(
-      'SELECT * FROM public.job_roles WHERE id = $1',
-      [id]
-    );
-
-    if (existingRole.rows.length === 0) {
-      return res.status(404).json({
-        error: {
-          message: 'Rol no encontrado',
-          status: 404
-        }
-      });
-    }
-
-    // Verificar permisos
-    if (existingRole.rows[0].created_by !== req.user.id && req.user.profile?.role !== 'admin') {
-      return res.status(403).json({
-        error: {
-          message: 'No tienes permisos para eliminar este rol',
-          status: 403
-        }
-      });
-    }
-
-    // Verificar si hay aplicaciones asociadas
-    const applicationsCount = await query(
-      'SELECT COUNT(*) as count FROM public.applications WHERE job_role_id = $1',
-      [id]
-    );
-
-    if (parseInt(applicationsCount.rows[0].count) > 0) {
-      // En lugar de eliminar, cambiar estado a 'closed'
-      await query(
-        'UPDATE public.job_roles SET status = $1, updated_at = NOW() WHERE id = $2',
-        ['closed', id]
+    // Usar una transacción para asegurar la atomicidad de la eliminación en la BD
+    const result = await transaction(async (client) => {
+      // 1. Verificar que el rol existe y el usuario tiene permisos
+      const roleQuery = await client.query(
+        'SELECT created_by FROM job_roles WHERE id = $1',
+        [id]
       );
 
-      return res.json({
-        message: 'Rol cerrado exitosamente (tiene aplicaciones asociadas)'
-      });
+      if (roleQuery.rows.length === 0) {
+        return { status: 404, message: 'Rol no encontrado' };
+      }
+
+      if (roleQuery.rows[0].created_by !== userId && req.user.profile?.role !== 'admin') {
+        return { status: 403, message: 'No tienes permisos para eliminar este rol' };
+      }
+
+      // 2. Obtener todas las aplicaciones asociadas para saber qué CVs borrar
+      const appsQuery = await client.query(
+        'SELECT id, cv_file_path FROM applications WHERE job_role_id = $1',
+        [id]
+      );
+      
+      const applications = appsQuery.rows;
+      const applicationIds = applications.map(app => app.id);
+      const cvFilePaths = applications.map(app => app.cv_file_path).filter(Boolean);
+
+      // 3. Eliminar evaluaciones de esas aplicaciones (si existen)
+      if (applicationIds.length > 0) {
+        await client.query(
+          'DELETE FROM evaluations WHERE application_id = ANY($1::uuid[])',
+          [applicationIds]
+        );
+      }
+
+      // 4. Eliminar las aplicaciones asociadas al rol
+      await client.query('DELETE FROM applications WHERE job_role_id = $1', [id]);
+
+      // 5. Eliminar el rol
+      await client.query('DELETE FROM job_roles WHERE id = $1', [id]);
+
+      // 6. Devolver los paths de los CVs para eliminarlos del storage
+      return { status: 200, cvFilePaths };
+    });
+
+    // Si la transacción falló, devolver el error correspondiente
+    if (result.status !== 200) {
+      return res.status(result.status).json({ success: false, message: result.message });
     }
 
-    // Eliminar el rol si no tiene aplicaciones
-    await query('DELETE FROM public.job_roles WHERE id = $1', [id]);
+    // 7. Eliminar los archivos de CV de Supabase Storage
+    if (result.cvFilePaths && result.cvFilePaths.length > 0) {
+      const { error: storageError } = await supabaseAdmin.storage
+        .from('cvs')
+        .remove(result.cvFilePaths);
 
-    res.json({
-      message: 'Rol eliminado exitosamente'
-    });
-  } catch (error) {
-    console.error('Error eliminando rol:', error);
-    res.status(500).json({
-      error: {
-        message: 'Error interno del servidor',
-        status: 500
+      if (storageError) {
+        // No devolver un error fatal, pero sí registrarlo
+        console.error('Error al eliminar algunos CVs de Storage:', storageError);
       }
-    });
+    }
+
+    res.json({ success: true, message: 'Rol y todos los datos asociados eliminados exitosamente' });
+
+  } catch (error) {
+    console.error('Error al eliminar el rol:', error);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
   }
 });
 
