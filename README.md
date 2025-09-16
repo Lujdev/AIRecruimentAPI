@@ -143,6 +143,7 @@ npm start
 |--------|----------|-------------|
 | GET | `/` | Listar todos los candidatos de la empresa |
 | GET | `/:id` | Obtener detalles de un candidato |
+| POST | `/compare` | Compara 2+ candidatos para un puesto usando IA |
 | DELETE | `/:id` | Eliminar un candidato, su evaluación y su CV |
 
 #### 🤖 Evaluaciones (`/api/evaluations`)
@@ -183,6 +184,53 @@ curl -X POST http://localhost:3000/api/applications \
 ```bash
 curl -X GET "http://localhost:3000/api/evaluations?page=1&limit=10&minScore=70" \
   -H "Authorization: Bearer tu-jwt-token"
+```
+
+### Comparar Candidatos con IA
+
+Este endpoint permite comparar dos o más candidatos que ya han sido evaluados para un puesto específico. La IA analiza las evaluaciones existentes y genera una recomendación sobre el candidato más idóneo.
+
+-   **Método:** `POST`
+-   **Endpoint:** `/api/candidates/compare`
+-   **Autenticación:** `Bearer Token` requerido.
+
+#### Request Body
+
+```json
+{
+  "roleId": "a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6",
+  "candidateIds": [
+    "uuid-candidato-1",
+    "uuid-candidato-2",
+    "uuid-candidato-3"
+  ]
+}
+```
+
+#### Respuesta Exitosa (200 OK)
+
+```json
+{
+  "success": true,
+  "data": {
+    "best_candidate_name": "Nombre Candidato 2",
+    "justification": "Análisis detallado y profundo que justifica la elección, comparando a los candidatos entre sí y contra los requisitos del puesto. Explica por qué el candidato elegido es superior a los demás.",
+    "comparison_summary": [
+      {
+        "candidate_name": "Nombre Candidato 1",
+        "analysis": "Breve análisis de cómo este candidato se ajusta al puesto y en qué es más débil o fuerte que los otros."
+      },
+      {
+        "candidate_name": "Nombre Candidato 2",
+        "analysis": "Breve análisis de cómo este candidato se ajusta al puesto y en qué es más débil o fuerte que los otros."
+      },
+      {
+        "candidate_name": "Nombre Candidato 3",
+        "analysis": "Breve análisis de cómo este candidato se ajusta al puesto y en qué es más débil o fuerte que los otros."
+      }
+    ]
+  }
+}
 ```
 
 ## 🗄️ Estructura de la Base de Datos
@@ -325,4 +373,4 @@ Si tienes preguntas o necesitas ayuda:
 
 ---
 
-**Desarrollado con ❤️ por el equipo de RecruimentApp**
+**Desarrollado con ❤️ por el equipo de RecruimentApp

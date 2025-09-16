@@ -81,8 +81,14 @@ router.get('/', optionalAuth, async (req, res) => {
       paramCount++;
     }
 
-    // Filtro por creador (solo si el usuario está autenticado)
-    if (createdBy && req.user) {
+    // Si hay un usuario logueado, filtrar por su ID por defecto.
+    // Se puede sobreescribir si se pasa un `createdBy` específico (ej. para admins).
+    if (req.user) {
+      const filterUserId = createdBy && createdBy !== 'me' ? createdBy : req.user.id;
+      whereConditions.push(`jr.created_by = $${paramCount}`);
+      queryParams.push(filterUserId);
+      paramCount++;
+    } else if (createdBy) { // Si no hay usuario logueado, pero se pide un creador específico
       whereConditions.push(`jr.created_by = $${paramCount}`);
       queryParams.push(createdBy);
       paramCount++;
