@@ -2,6 +2,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { query, transaction } = require('../utils/database');
 const { supabaseAdmin } = require('../config/supabase');
+const { compareCandidatesWithGemini } = require('../config/gemini');
 const router = express.Router();
 
 /**
@@ -24,22 +25,22 @@ router.get('/', authenticateToken, async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
     
     // Construir la consulta base
-    let whereConditions = ['jr.created_by = $1'];
+    let whereConditions = ['jr.created_by = $1' ];
     let queryParams = [userId];
-    let paramIndex = 2;
+    let paramCount = 2;
 
     // Filtro por estado
     if (status && status !== 'all') {
-      whereConditions.push(`a.status = ${paramIndex}`);
+      whereConditions.push(`a.status = $${paramCount}`);
       queryParams.push(status);
-      paramIndex++;
+      paramCount++;
     }
 
     // Filtro de búsqueda por nombre o email
     if (search && search.trim()) {
-      whereConditions.push(`(a.candidate_name ILIKE ${paramIndex} OR a.candidate_email ILIKE ${paramIndex})`);
-      queryParams.push(`%${search.trim()}%`);
-      paramIndex++;
+      whereConditions.push(`(a.candidate_name ILIKE $${paramCount} OR a.candidate_email ILIKE $${paramCount + 1})`);
+      queryParams.push(`%${search.trim()}%`, `%${search.trim()}%`);
+      paramCount += 2;
     }
 
     const whereClause = whereConditions.join(' AND ');
@@ -67,7 +68,7 @@ router.get('/', authenticateToken, async (req, res) => {
       LEFT JOIN evaluations e ON e.application_id = a.id
       WHERE ${whereClause}
       ORDER BY ${finalSortBy === 'score' ? 'COALESCE(e.score, 0)' : finalSortBy} ${finalSortOrder}
-      LIMIT ${paramIndex} OFFSET ${paramIndex + 1}
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
     `;
 
     queryParams.push(parseInt(limit), offset);
@@ -82,7 +83,7 @@ router.get('/', authenticateToken, async (req, res) => {
       WHERE ${whereClause}
     `;
 
-    const countResult = await query(countQuery, queryParams.slice(0, -2)); // Remover limit y offset
+    const countResult = await query(countQuery, queryParams.slice(0, paramCount - 1)); // Usar solo los params del WHERE
     const totalCandidates = parseInt(countResult.rows[0].total);
     const totalPages = Math.ceil(totalCandidates / parseInt(limit));
 
@@ -199,6 +200,104 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+
+/**
+ * POST /api/candidates/compare
+ * Compara dos o más candidatos para un puesto y devuelve la recomendación de la IA.
+ */
+router.post('/compare', authenticateToken, async (req, res) => {
+  const { candidateIds, roleId } = req.body;
+  const userId = req.user.id;
+
+  // 1. Validar entrada
+  if (!Array.isArray(candidateIds) || candidateIds.length < 2 || !roleId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Se requiere un array de al menos 2 IDs de candidatos y el ID del puesto.',
+    });
+  }
+
+  try {
+    // 2. Obtener la información del puesto y verificar permisos
+    const roleQuery = await query(
+      'SELECT title, description, requirements FROM job_roles WHERE id = $1 AND created_by = $2',
+      [roleId, userId]
+    );
+
+    if (roleQuery.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Puesto no encontrado o no tienes permisos para acceder a él.',
+      });
+    }
+    const role = roleQuery.rows[0];
+
+    // 3. Obtener la información y evaluación de cada candidato
+    const candidatesQuery = `
+      SELECT
+        a.id,
+        a.candidate_name as name,
+        e.score,
+        e.strengths,
+        e.weaknesses,
+        e.summary
+      FROM applications a
+      LEFT JOIN evaluations e ON a.id = e.application_id
+      WHERE a.id = ANY($1::uuid[]) AND a.job_role_id = $2
+    `;
+    const candidatesResult = await query(candidatesQuery, [candidateIds, roleId]);
+
+    const candidates = candidatesResult.rows.map(c => ({
+      id: c.id,
+      name: c.name,
+      evaluation: {
+        score: c.score,
+        strengths: c.strengths || [],
+        weaknesses: c.weaknesses || [],
+        summary: c.summary || 'Sin evaluación previa.',
+      },
+    }));
+
+    // Verificar que todos los candidatos fueron encontrados y tienen evaluación
+    if (candidates.length !== candidateIds.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Algunos candidatos no se encontraron o no pertenecen al puesto especificado.',
+      });
+    }
+     const candidatesWithoutEvaluation = candidates.filter(c => !c.evaluation.score);
+    if (candidatesWithoutEvaluation.length > 0) {
+        return res.status(400).json({
+            success: false,
+            message: `Los siguientes candidatos no tienen una evaluación: ${candidatesWithoutEvaluation.map(c => c.name).join(', ')}`,
+        });
+    }
+
+
+    // 4. Llamar a Gemini para la comparación
+    const comparisonResult = await compareCandidatesWithGemini(role, candidates);
+
+    if (comparisonResult.error) {
+      return res.status(500).json({
+        success: false,
+        message: comparisonResult.message,
+      });
+    }
+
+    // 5. Devolver el resultado
+    res.json({
+      success: true,
+      data: comparisonResult,
+    });
+
+  } catch (error) {
+    console.error('Error al comparar candidatos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor al comparar candidatos.',
+    });
+  }
+});
 
 /**
  * DELETE /api/candidates/:id

@@ -43,6 +43,7 @@ Eres un evaluador senior de recursos humanos, extremadamente estricto y objetivo
 2.  **HABILIDADES ESPECÍFICAS:** Identifica las 2-3 habilidades más críticas mencionadas en la descripción del puesto (ej: "programación frontend", "atención al cliente", "ventas"). El candidato debe mencionar explícitamente estas habilidades o herramientas clave en su CV. Si no lo hace, es una falta crítica.
 3.  **CANTIDAD DE ELEMENTOS EN LISTAS:** Debes generar **exactamente 3 elementos** para los arrays 'strengths' y 'weaknesses'. Si no encuentras 3 fortalezas, completa con las más relevantes aunque sean débiles. Si no encuentras 3 debilidades, repite las más críticas o usa "No proporciona información sobre [requisito importante]".
 4.  **NO INVENTAR:** Si una habilidad, herramienta o experiencia requerida NO está escrita en el CV, se considera que el candidato NO la tiene. No extrapoles.
+5.  **Lenguaje:** Debes darme todo en Español.
 
 PUESTO DE TRABAJO:
 ${jobDescription}
@@ -175,6 +176,86 @@ async function evaluateCVWithText(cvText, jobDescription) {
 module.exports = {
   evaluateCVWithFile,
   evaluateCVWithText,
+  MODEL_VISION,
+  MODEL_TEXT,
+};
+
+const getComparisonPrompt = (role, candidates) => `
+Eres un director de Recursos Humanos con más de 20 años de experiencia, especializado en la selección de talento para puestos de tecnología. Tu tarea es analizar un conjunto de candidatos que ya han sido evaluados por un asistente junior. Debes realizar una comparación detallada y determinar cuál es el mejor candidato para el puesto.
+
+**PUESTO DE TRABAJO:**
+- **Título:** ${role.title}
+- **Descripción:** ${role.description}
+- **Requisitos:** ${role.requirements}
+
+**CANDIDATOS A COMPARAR:**
+${candidates.map((c, index) => `
+**Candidato ${index + 1}: ${c.name} (Puntuación Inicial: ${c.evaluation.score})**
+- **Resumen de la Evaluación Inicial:** ${c.evaluation.summary}
+- **Fortalezas Detectadas:**
+  - ${c.evaluation.strengths.join('\n  - ')}
+- **Debilidades Detectadas:**
+  - ${c.evaluation.weaknesses.join('\n  - ')}
+`).join('')}
+
+**INSTRUCCIONES PARA LA COMPARACIÓN:**
+1.  **Análisis Comparativo:** Compara directamente las fortalezas y debilidades de los candidatos en relación con los requisitos CLAVE del puesto.
+2.  **Justificación Profunda:** No te limites a repetir la información. Aporta un análisis crítico y profundo. Por ejemplo, si un candidato tiene "Experiencia en React" como fortaleza y el puesto requiere "React", explica POR QUÉ eso lo hace más fuerte que otro candidato que quizás solo tenga "conocimientos de JavaScript".
+3.  **Identificar al Mejor Candidato:** Declara CLARAMENTE cuál es el mejor candidato (Si ninguno es adecuado, recomiendo el mejor que pueda ser capacitado con pocos recursos).
+4.  **Formato de Respuesta:** Responde con un objeto JSON válido, sin texto adicional.
+5.  **Lenguaje:** Debes darme todo en Español.
+
+**FORMATO DE SALIDA JSON:**
+{
+  "best_candidate_name": "Nombre del Mejor Candidato",
+  "justification": "Análisis detallado y profundo que justifica tu elección, comparando a los candidatos entre sí y contra los requisitos del puesto. Explica por qué el candidato elegido es superior a los demás.",
+  "comparison_summary": [
+    {
+      "candidate_name": "Nombre Candidato 1",
+      "analysis": "Breve análisis de cómo este candidato se ajusta al puesto y en qué es más débil o fuerte que los otros."
+    },
+    {
+      "candidate_name": "Nombre Candidato 2",
+      "analysis": "Breve análisis de cómo este candidato se ajusta al puesto y en qué es más débil o fuerte que los otros."
+    }
+  ]
+}
+`;
+
+/**
+ * Compara candidatos para un puesto usando Gemini.
+ * @param {object} role - El puesto de trabajo (title, description, requirements).
+ * @param {Array<object>} candidates - Array de candidatos con sus evaluaciones.
+ * @returns {Promise<Object>} - El resultado de la comparación.
+ */
+async function compareCandidatesWithGemini(role, candidates) {
+  try {
+    const model = genAI.getGenerativeModel({
+      model: MODEL_TEXT,
+      safetySettings,
+      generationConfig,
+    });
+
+    const prompt = getComparisonPrompt(role, candidates);
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const comparison = response.text();
+
+    return JSON.parse(comparison);
+  } catch (error) {
+    console.error('Error en la comparación de candidatos con Gemini:', error);
+    return {
+      error: true,
+      message: 'No se pudo completar la comparación debido a un error del modelo de IA.',
+      details: error.message,
+    };
+  }
+}
+
+module.exports = {
+  evaluateCVWithFile,
+  evaluateCVWithText,
+  compareCandidatesWithGemini,
   MODEL_VISION,
   MODEL_TEXT,
 };
